@@ -53,5 +53,13 @@ for (var i = 0; i < ds.length; i++) {
 
 systemctl --user daemon-reload
 systemctl --user enable --now hourly-art.timer
-systemctl --user start hourly-art.service
-echo "Installed. Now showing: $(cat "${XDG_CACHE_HOME:-$HOME/.cache}/hourly-art/current.txt")"
+if ! systemctl --user start hourly-art.service; then
+  echo "Installed, but the first run failed; see: journalctl --user -u hourly-art" >&2
+  exit 1
+fi
+current=${XDG_CACHE_HOME:-$HOME/.cache}/hourly-art/current.txt
+if [[ -r $current ]]; then
+  echo "Installed. Now showing: $(<"$current")"
+else
+  echo "Installed."
+fi

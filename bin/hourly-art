@@ -32,9 +32,13 @@ JAPANESE_EXCLUDE=(shunga erotic erotica lovers couple embrace "making love" pill
 search_ids() {
   local off=0 res total
   while :; do
-    res=$(curl -sfG "$API.1/search" "$@" -d limit=500 -d offset=$off) || return 1
+    # Give up on a rebuild that drags on, so systemd's timeout never cuts it short
+    (( SECONDS < 480 )) || return 1
+    res=$(curl -sfG --connect-timeout 15 --max-time 60 "$API.1/search" "$@" -d limit=500 -d offset=$off) || return 1
+    # A 200 with an HTML challenge or truncated JSON is a failure, not the end
+    total=$(jq -e '.total | numbers' <<<"$res") || return 1
     jq -r '.objectIDs // [] | .[]' <<<"$res"
-    total=$(jq '.total' <<<"$res"); off=$((off + 500)); sleep 1
+    off=$((off + 500)); sleep 1
     (( off < total && off < 10000 )) || return 0
   done
 }
@@ -58,7 +62,7 @@ japanese_excluded() {
 build_pools() {
   local excluded japanese
   excluded=$(japanese_excluded) || return 1
-  curl -sf "$API/objects?departmentIds=11" | jq -r '.objectIDs[] | "paintings\t\(.)\t"' || return 1
+  curl -sf --connect-timeout 15 --max-time 60 "$API/objects?departmentIds=11" | jq -r '.objectIDs[] | "paintings\t\(.)\t"' || return 1
   sleep 1
   japanese=$(for a in "${JAPANESE_ARTISTS[@]}"; do search_artist japanese 6 "$a" || exit 1; done) || return 1
   awk -F'\t' 'NR == FNR { skip[$1]; next } !($2 in skip)' <(echo "$excluded") <(echo "$japanese")
@@ -78,7 +82,9 @@ read -r enabled ox oy sw sh < <(kscreen-doctor -j | jq -r --arg o "$OUTPUT" \
 # unreachable, keep the old list and back its mtime off so the next rebuild
 # is attempted in a day rather than every hour
 if [[ ! -s $POOLS ]] || [[ -n $(find "$POOLS" -mtime +6) ]]; then
-  if build_pools > "$POOLS.tmp"; then
+  # A build missing a whole pool (say, an empty reply) counts as failed
+  if build_pools > "$POOLS.tmp" && awk -F'\t' '{ p[$1] } END {
+       exit !(("paintings" in p) && ("japanese" in p) && ("european" in p)) }' "$POOLS.tmp"; then
     mv "$POOLS.tmp" "$POOLS"
   else
     rm -f "$POOLS.tmp"
@@ -153,10 +159,12 @@ PY
 
 # Try fresh artwork from the Met; each download gets a caption file next to it
 for try in $(seq 20); do
+  # Stop after 10 minutes so the cached fallback runs before systemd's timeout
+  (( SECONDS < 600 )) || break
   (( try == 1 )) || sleep 1
   pool=$(shuf -n1 -e paintings japanese european)
   IFS=$'\t' read -r _ id artist < <(awk -F'\t' -v p="$pool" '$1 == p' "$POOLS" | shuf -n1) || continue
-  obj=$(curl -sf --max-time 30 "$API/objects/$id") || continue
+  obj=$(curl -sf --connect-timeout 15 --max-time 30 "$API/objects/$id") || continue
   # The search matches loosely, so check the artist; skip nudes in every pool
   # and, in the Japanese pool, anything whose title suggests shunga
   url=$(jq -r --arg a "$artist" --arg p "$pool" '
@@ -168,7 +176,7 @@ for try in $(seq 20); do
     | .primaryImage' <<<"$obj") || continue
   [[ -n $url ]] || continue
   img=$CACHE/art-$id.jpg
-  curl -sf --max-time 300 "$url" -o "$img" || { rm -f "$img"; continue; }
+  curl -sf --connect-timeout 15 --max-time 120 "$url" -o "$img" || { rm -f "$img"; continue; }
   # Skip portrait-oriented works (they look poor on a 16:10 screen),
   # low-resolution scans and black-and-white archival photos
   read -r w h sat fill color < <(analyse "$img")
@@ -177,7 +185,7 @@ for try in $(seq 20); do
   break
 done
 
-# Offline (or the Met is unreachable): show a random cached work instead,
+# No fresh work (offline, or every try rejected): show a random cached work,
 # other than the one already on screen
 if [[ ! -f ${img:-} ]]; then
   current=$(qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript "
@@ -194,12 +202,12 @@ if [[ ! -f ${img:-} ]]; then
         done | shuf -n1)
   [[ -n $img ]] || { echo "no artwork found and nothing cached" >&2; exit 1; }
   read -r w h sat fill color < <(analyse "$img")
-  echo "offline: using cached artwork" >&2
+  echo "no new artwork found; using cached artwork" >&2
 fi
 
 # Escape the path for a single-quoted JS string (backslashes first)
 esc=${img//\\/\\\\}; esc=${esc//\'/\\\'}
-qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript "
+result=$(qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript "
 var ds = desktops();
 for (var i = 0; i < ds.length; i++) {
   var g = screenGeometry(ds[i].screen);
@@ -210,8 +218,10 @@ for (var i = 0; i < ds.length; i++) {
     ds[i].writeConfig('FillMode', $fill);
     ds[i].writeConfig('Blur', false);
     ds[i].writeConfig('Color', '$color');
+    print('set');
   }
-}"
+}")
+[[ $result == *set* ]] || { echo "no Plasma desktop found for $OUTPUT" >&2; exit 1; }
 
 cp "${img%.jpg}.txt" "$CACHE/current.txt"
 cat "$CACHE/current.txt"

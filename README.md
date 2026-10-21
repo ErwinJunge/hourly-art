@@ -78,9 +78,9 @@ Running it again updates the installed copies without adding duplicate
 widgets. After an update, restart Plasma so the widgets pick up changes:
 `systemctl --user restart plasma-plasmashell`.
 
-The installer doesn't remove anything, so if that desktop already has a clock
-widget, you'll now have two. Remove the old one through the desktop's edit
-mode.
+The installer doesn't remove any widgets from your desktop, so if that desktop
+already has a clock widget, you'll now have two. Remove the old one through
+the desktop's edit mode.
 
 ## Usage
 
