@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+# Set a random public-domain artwork from the Met Museum as the wallpaper on
+# the built-in screen only. Each run picks one of three pools with equal
+# chance: European paintings, Japanese woodblock prints by selected artists,
+# or European prints by selected artists.
+set -euo pipefail
+
+# The output to decorate; see `kscreen-doctor -o` for names
+OUTPUT=${HOURLY_ART_OUTPUT:-eDP-1}
+API=https://collectionapi.metmuseum.org/public/collection/v1
+CACHE=${XDG_CACHE_HOME:-$HOME/.cache}/hourly-art
+POOLS=$CACHE/pools.tsv
+mkdir -p "$CACHE"
+
+JAPANESE_ARTISTS=(Hokusai Hiroshige Kiyonaga Harunobu Kuniyoshi Kiyochika)
+EUROPEAN_ARTISTS=(Dürer Rembrandt Piranesi Goya Whistler Canaletto)
+# Japanese prints matching these are left out: the collection has a lot of
+# shunga, and its tags don't reliably mark it
+JAPANESE_EXCLUDE=(shunga erotic erotica lovers couple embrace "making love" pillow nude)
+
+# Print "<pool>\t<id>\t<artist>" for every public-domain work with an image
+# whose artist matches the name; pauses keep us under the Met's rate limits
+search_artist() {
+  local pool=$1 dept=$2 artist=$3 off=0 res total
+  while :; do
+    res=$(curl -sfG "$API.1/search" --data-urlencode "q=$artist" -d departmentId="$dept" \
+      -d artistOrCulture=true -d isPublicDomain=true -d hasImages=true -d limit=500 -d offset=$off) || return 1
+    jq -r --arg p "$pool" --arg a "$artist" '.objectIDs // [] | .[] | "\($p)\t\(.)\t\($a)"' <<<"$res"
+    total=$(jq '.total' <<<"$res"); off=$((off + 500)); sleep 1
+    (( off < total && off < 10000 )) || return 0
+  done
+}
+
+# Print the IDs of Asian Art works matching any of the exclusion terms
+japanese_excluded() {
+  local term
+  for term in "${JAPANESE_EXCLUDE[@]}"; do
+    curl -sfG "$API.1/search" --data-urlencode "q=$term" -d departmentId=6 -d limit=500 \
+      | jq -r '.objectIDs // [] | .[]' || return 1
+    sleep 1
+  done
+}
+
+build_pools() {
+  local excluded japanese
+  excluded=$(japanese_excluded) || return 1
+  curl -sf "$API/objects?departmentIds=11" | jq -r '.objectIDs[] | "paintings\t\(.)\t"' || return 1
+  sleep 1
+  japanese=$(for a in "${JAPANESE_ARTISTS[@]}"; do search_artist japanese 6 "$a" || exit 1; done) || return 1
+  awk -F'\t' 'NR == FNR { skip[$1]; next } !($2 in skip)' <(echo "$excluded") <(echo "$japanese")
+  for a in "${EUROPEAN_ARTISTS[@]}"; do search_artist european 9 "$a" || return 1; done
+}
+
+# Refresh the pools weekly; keep the old list if the API is unreachable
+if [[ ! -s $POOLS ]] || [[ -n $(find "$POOLS" -mtime +7) ]]; then
+  if build_pools > "$POOLS.tmp"; then mv "$POOLS.tmp" "$POOLS"; else rm -f "$POOLS.tmp"; fi
+fi
+[[ -s $POOLS ]] || { echo "no artwork list available" >&2; exit 1; }
+
+# Locate the built-in display by its position (Plasma's screen numbering
+# follows output priority, not KWin's order) and get its aspect ratio
+read -r ox oy sw sh < <(kscreen-doctor -j | jq -r --arg o "$OUTPUT" \
+  '.outputs[] | select(.name == $o) | "\(.pos.x) \(.pos.y) \(.size.width) \(.size.height)"')
+
+# Cut off the grey-scale calibration strip some scans have along the bottom,
+# then print "<width> <height> <saturation> <fill mode> <bar colour>": crop to
+# fill when that loses little of the work; otherwise fit it on bars in the
+# median colour of its edges
+analyse() {
+  python3 - "$1" "$sw" "$sh" <<'PY' 2>/dev/null || echo "1 0 0 1 #000000"
+import sys
+from PIL import Image, ImageStat
+
+def is_grey_scale(g):
+    """A row through a grey-scale strip: dark to light in many flat steps."""
+    if min(g) > 70 or max(g) < 170: return False
+    edges = [i for i in range(len(g) - 2) if abs(g[i + 2] - g[i]) > 6]
+    steps = sum(1 for k, i in enumerate(edges) if k == 0 or i - edges[k - 1] > 2)
+    flat = sum(1 for i in range(1, len(g)) if abs(g[i] - g[i - 1]) <= 2) / len(g)
+    return steps >= 8 and flat > 0.5
+
+def strip_top(im):
+    """Return the y where a grey-scale strip starts in the bottom third, or None."""
+    W = 400
+    sm = im.resize((W, max(1, round(im.height * W / im.width))))
+    H = sm.height
+    sat = sm.convert("HSV").getchannel("S").load(); px = sm.convert("L").load()
+    hits = []
+    for y in range(H * 2 // 3, H):
+        start = 0
+        for x in range(W + 1):
+            # saturation is meaningless for near-black pixels; count them as grey
+            if x == W or (sat[x, y] > 25 and px[x, y] > 60):
+                if x - start >= W // 6 and is_grey_scale([px[i, y] for i in range(start, x)]):
+                    hits.append(y); break
+                start = x + 1
+    # require a band of near-consecutive strip rows at least 1.5% of the height
+    if not hits: return None
+    bands, cur = [], [hits[0]]
+    for y in hits[1:]:
+        if y - cur[-1] <= 2: cur.append(y)
+        else: bands.append(cur); cur = [y]
+    bands.append(cur)
+    band = max(bands, key=len)
+    # cut a few rows above the first detected row, which can lag the strip edge
+    return int(max(0, band[0] - 3) * im.height / H) if len(band) >= H * 0.015 else None
+
+im = Image.open(sys.argv[1]).convert("RGB")
+top = strip_top(im)
+if top:
+    im = im.crop((0, 0, im.width, top))
+    im.save(sys.argv[1], quality=95)
+w, h = im.size
+small = im.resize((200, 200))
+sat = ImageStat.Stat(small.convert("HSV")).mean[1]
+r, R = w / h, int(sys.argv[2]) / int(sys.argv[3])
+loss = 1 - min(r, R) / max(r, R)
+# Bars appear top/bottom for wider-than-screen works, left/right otherwise
+strips = ([(0, 0, 200, 4), (0, 196, 200, 200)] if r > R
+          else [(0, 0, 4, 200), (196, 0, 200, 200)])
+px = [p for box in strips for p in small.crop(box).get_flattened_data()]
+color = "#" + "".join(f"{sorted(c)[len(c) // 2]:02x}" for c in zip(*px))
+print(w, h, int(sat), 2 if loss < 0.12 else 1, color)
+PY
+}
+
+# Try fresh artwork from the Met; each download gets a caption file next to it
+for try in $(seq 20); do
+  (( try == 1 )) || sleep 1
+  pool=$(shuf -n1 -e paintings japanese european)
+  IFS=$'\t' read -r _ id artist < <(awk -F'\t' -v p="$pool" '$1 == p' "$POOLS" | shuf -n1) || continue
+  obj=$(curl -sf --max-time 30 "$API/objects/$id") || continue
+  # The search matches loosely, so check the artist; in the Japanese pool,
+  # also skip anything whose tags or title suggest shunga
+  url=$(jq -r --arg a "$artist" --arg p "$pool" '
+    select(.isPublicDomain and .primaryImage != "")
+    | select($a == "" or (.artistDisplayName | contains($a)))
+    | select($p != "japanese" or (([.tags[]?.term] | any(test("Nude")))
+        or (.title | test("embrac|lover|erotic|shunga|making love|couple|pillow"; "i")) | not))
+    | .primaryImage' <<<"$obj") || continue
+  [[ -n $url ]] || continue
+  img=$CACHE/art-$id.jpg
+  curl -sf --max-time 300 "$url" -o "$img" || { rm -f "$img"; continue; }
+  # Skip portrait-oriented works (they look poor on a 16:10 screen) and
+  # black-and-white archival photos
+  read -r w h sat fill color < <(analyse "$img")
+  if (( w < h || sat < 12 )); then rm -f "$img"; continue; fi
+  jq -r '"\(.title) — \(.artistDisplayName // "unknown") (\(.objectDate))"' <<<"$obj" > "${img%.jpg}.txt"
+  break
+done
+
+# Offline (or the Met is unreachable): show a random cached work instead,
+# other than the one already on screen
+if [[ ! -f ${img:-} ]]; then
+  current=$(qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript "
+    var ds = desktops();
+    for (var i = 0; i < ds.length; i++) {
+      var g = screenGeometry(ds[i].screen);
+      if (g.x == $ox && g.y == $oy) {
+        ds[i].currentConfigGroup = ['Wallpaper', 'org.kde.image', 'General'];
+        print(ds[i].readConfig('Image'));
+      }
+    }" 2>/dev/null || true)
+  img=$(for f in "$CACHE"/art-*.jpg; do
+          if [[ -f ${f%.jpg}.txt && file://$f != "$current" ]]; then echo "$f"; fi
+        done | shuf -n1)
+  [[ -n $img ]] || { echo "no artwork found and nothing cached" >&2; exit 1; }
+  read -r w h sat fill color < <(analyse "$img")
+  echo "offline: using cached artwork" >&2
+fi
+
+qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript "
+var ds = desktops();
+for (var i = 0; i < ds.length; i++) {
+  var g = screenGeometry(ds[i].screen);
+  if (g.x == $ox && g.y == $oy) {
+    ds[i].wallpaperPlugin = 'org.kde.image';
+    ds[i].currentConfigGroup = ['Wallpaper', 'org.kde.image', 'General'];
+    ds[i].writeConfig('Image', 'file://$img');
+    ds[i].writeConfig('FillMode', $fill);
+    ds[i].writeConfig('Blur', false);
+    ds[i].writeConfig('Color', '$color');
+  }
+}"
+
+cp "${img%.jpg}.txt" "$CACHE/current.txt"
+cat "$CACHE/current.txt"
+
+# Keep a week of hourly downloads (with their captions) for offline use
+ls -1t "$CACHE"/art-*.jpg | tail -n +169 | while read -r f; do rm -f "$f" "${f%.jpg}.txt"; done

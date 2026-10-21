@@ -1,0 +1,13 @@
+{
+    "KPlugin": {
+        "Id": "local.hourlyart.caption",
+        "Name": "Artwork Caption",
+        "Description": "Shows the title and artist of the current hourly-art wallpaper",
+        "Icon": "viewimage",
+        "Category": "Utilities",
+        "License": "MIT",
+        "Version": "1.0"
+    },
+    "KPackageStructure": "Plasma/Applet",
+    "X-Plasma-API-Minimum-Version": "6.0"
+}
