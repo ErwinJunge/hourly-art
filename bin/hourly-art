@@ -157,13 +157,14 @@ for try in $(seq 20); do
   pool=$(shuf -n1 -e paintings japanese european)
   IFS=$'\t' read -r _ id artist < <(awk -F'\t' -v p="$pool" '$1 == p' "$POOLS" | shuf -n1) || continue
   obj=$(curl -sf --max-time 30 "$API/objects/$id") || continue
-  # The search matches loosely, so check the artist; in the Japanese pool,
-  # also skip anything whose tags or title suggest shunga
+  # The search matches loosely, so check the artist; skip nudes in every pool
+  # and, in the Japanese pool, anything whose title suggests shunga
   url=$(jq -r --arg a "$artist" --arg p "$pool" '
     select(.isPublicDomain and .primaryImage != "")
     | select($a == "" or (.artistDisplayName | contains($a)))
-    | select($p != "japanese" or (([.tags[]?.term] | any(test("Nude")))
-        or (.title | test("embrac|lover|erotic|shunga|making love|couple|pillow"; "i")) | not))
+    | select(([.tags[]?.term] | any(test("Nude"))) or (.title | test("\\bnudes?\\b|naked"; "i")) | not)
+    | select($p != "japanese"
+        or (.title | test("embrac|lover|erotic|shunga|making love|couple|pillow"; "i") | not))
     | .primaryImage' <<<"$obj") || continue
   [[ -n $url ]] || continue
   img=$CACHE/art-$id.jpg

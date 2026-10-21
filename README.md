@@ -30,11 +30,12 @@ Along the way the script:
 - **Fits works to the screen:** a work is cropped to fill the screen when that
   loses less than 12% of it. Otherwise it is shown whole, on bars in the
   median colour of its edges.
-- **Leaves out erotica:** shunga is common in the Japanese collection, so
-  prints matching terms like "shunga", "erotic" or "lovers" in the Met's search
-  are excluded, along with prints tagged with nudity. The filter is based on
-  keywords, so it is not airtight. Utamaro and Eisen, who made the most
-  shunga, are left out entirely.
+- **Leaves out nudes and erotica:** works the Met tags as nudes, or with
+  "nude" or "naked" in the title, are skipped in all three collections. Shunga
+  is common in the Japanese collection, so prints matching terms like
+  "shunga", "erotic" or "lovers" in the Met's search are excluded too. The
+  filters are based on keywords, so they are not airtight. Utamaro and Eisen,
+  who made the most shunga, are left out entirely.
 - **Works offline:** it keeps the last 168 downloads (a week, roughly
   0.6–1 GB). If the Met can't be reached, it shows a random cached work.
 
