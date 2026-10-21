@@ -50,7 +50,7 @@ On Arch Linux: `sudo pacman -S curl jq python-pillow qt6-tools libkscreen plasma
 ## Installation
 
 ```sh
-git clone https://github.com/erwinjunge/hourly-art.git
+git clone https://github.com/ErwinJunge/hourly-art.git
 cd hourly-art
 ./install.sh
 ```
