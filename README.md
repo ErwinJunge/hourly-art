@@ -65,7 +65,7 @@ HOURLY_ART_OUTPUT=HDMI-A-1 ./install.sh
 
 The installer:
 
-1. Copies `bin/hourly-art` to `~/.local/bin/` and the widgets to
+1. Copies the scripts in `bin/` to `~/.local/bin/` and the widgets to
    `~/.local/share/plasma/plasmoids/`.
 2. Adds the caption widget (bottom-left) and the clock widget (bottom-right)
    to that screen's desktop, unless they're already there. It aims for 32px
@@ -73,6 +73,8 @@ The installer:
    a screen with a panel, for example, they may end up flush with the bottom
    edge. Drag them in the desktop's edit mode if needed.
 3. Enables an hourly systemd user timer and shows the first artwork.
+4. Starts a small service that puts the widgets back after the laptop lid
+   opens (see [Layout notes](#layout-notes)).
 
 Running it again updates the installed copies without adding duplicate
 widgets. After an update, restart Plasma so the widgets pick up changes:
@@ -87,6 +89,8 @@ the desktop's edit mode.
 - **New artwork now:** `systemctl --user start hourly-art.service`
 - **What's showing:** `cat ~/.cache/hourly-art/current.txt`
 - **Logs:** `journalctl --user -u hourly-art.service`
+- **Widgets out of place:** `hourly-art-fix-widgets` (see below)
+- **Lid watcher logs:** `journalctl --user -u hourly-art-lid.service`
 
 To change the artists, the collection weighting (the
 `shuf -n1 -e paintings japanese european` line) or the crop threshold, edit
@@ -102,6 +106,18 @@ requests get your IP temporarily blocked.
 - **Wrong screen:** Plasma numbers screens by output priority, not by KWin's
   order, so the script finds the screen by its position rather than its
   number.
+- **Widgets moving after a lid close:** with an external screen attached,
+  closing a laptop's lid switches its screen off, and Plasma squeezes that
+  desktop's widgets onto the external screen's size. On reopening, the caption
+  and clock sit higher than before. The `hourly-art-lid` service watches for
+  the lid opening and then runs `hourly-art-fix-widgets`, which puts them back
+  32px from the sides and 16px from the bottom. If they moved, it restarts
+  Plasma, so the screens go blank for a few seconds; if not, it does nothing.
+  You can also run `hourly-art-fix-widgets` yourself (for a screen other than
+  `eDP-1`, set `HOURLY_ART_OUTPUT` as for the installer). Because it always
+  restores those positions, widgets you drag elsewhere are moved back the next
+  time the lid opens; to keep your own layout, run
+  `systemctl --user disable --now hourly-art-lid.service`.
 - **Moving the widgets:** Plasma's scripting interface can't move widgets once
   placed. To move them, use the desktop's edit mode, or stop Plasma and edit
   `ItemGeometries-<resolution>` in
@@ -111,9 +127,10 @@ requests get your IP temporarily blocked.
 ## Uninstall
 
 ```sh
-systemctl --user disable --now hourly-art.timer
-rm ~/.local/bin/hourly-art ~/.config/systemd/user/hourly-art.{service,timer}
-rm -rf ~/.config/systemd/user/hourly-art.service.d ~/.cache/hourly-art
+systemctl --user disable --now hourly-art.timer hourly-art-lid.service
+rm ~/.local/bin/hourly-art{,-fix-widgets,-lid-watch}
+rm ~/.config/systemd/user/hourly-art{.service,.timer,-lid.service}
+rm -rf ~/.config/systemd/user/hourly-art{,-lid}.service.d ~/.cache/hourly-art
 rm -rf ~/.local/share/plasma/plasmoids/local.hourlyart.{caption,clock}
 systemctl --user daemon-reload
 ```

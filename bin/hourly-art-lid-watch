@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Each time the laptop lid opens, wait for the hourly-art screen to come back
+# and run hourly-art-fix-widgets, which restarts Plasma only if the widgets
+# were moved while the screen was off
+set -euo pipefail
+
+OUTPUT=${HOURLY_ART_OUTPUT:-eDP-1}
+
+screen_on() {
+  kscreen-doctor -j | jq -e --arg o "$OUTPUT" \
+    'any(.outputs[]; .name == $o and .enabled)' >/dev/null
+}
+
+gdbus monitor --system --dest org.freedesktop.UPower --object-path /org/freedesktop/UPower |
+while read -r line; do
+  [[ $line == *"'LidIsClosed': <false>"* ]] || continue
+  for _ in {1..30}; do screen_on && break; sleep 1; done
+  screen_on || continue
+  # Let Plasma finish moving the desktop back onto the screen
+  sleep 3
+  "$(dirname "$0")"/hourly-art-fix-widgets || true
+done

@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Put the caption and clock back 32px from the sides and 16px from the bottom
+# of the hourly-art screen. Plasma moves desktop widgets when a screen changes
+# (for example when the lid is closed with an external screen attached), and
+# its scripting can't move them, so this briefly stops Plasma to edit the
+# saved layout. Does nothing if the widgets are already in place.
+set -euo pipefail
+
+# The output to fix; see `kscreen-doctor -o` for names
+OUTPUT=${HOURLY_ART_OUTPUT:-eDP-1}
+APPLETSRC=plasma-org.kde.plasma.desktop-appletsrc
+
+read -r ox oy < <(kscreen-doctor -j | jq -r --arg o "$OUTPUT" \
+  '.outputs[] | select(.name == $o and .enabled) | "\(.pos.x) \(.pos.y)"') || true
+[[ -n ${ox:-} ]] || { echo "output $OUTPUT not found or not enabled; set HOURLY_ART_OUTPUT" >&2; exit 1; }
+
+# Find that screen's desktop (by position, as Plasma's screen numbering
+# follows output priority), its size, and the two widgets' IDs and current
+# geometry ("-" when a widget isn't there)
+read -r cid sw sh clock clock_at caption caption_at < <(qdbus6 org.kde.plasmashell /PlasmaShell \
+  org.kde.PlasmaShell.evaluateScript "
+var ds = desktops();
+for (var i = 0; i < ds.length; i++) {
+  var g = screenGeometry(ds[i].screen);
+  if (g.x != $ox || g.y != $oy) continue;
+  var found = {};
+  var ws = ds[i].widgets();
+  for (var j = 0; j < ws.length; j++) {
+    var r = ws[j].geometry;
+    found[ws[j].type] = ws[j].id + ' ' + [r.x, r.y, r.width, r.height].join(',');
+  }
+  print(ds[i].id + ' ' + g.width + ' ' + g.height + ' '
+    + (found['local.hourlyart.clock'] || '0 -') + ' ' + (found['local.hourlyart.caption'] || '0 -'));
+}") || true
+[[ -n ${cid:-} ]] || { echo "no Plasma desktop found for $OUTPUT" >&2; exit 1; }
+(( clock || caption )) || { echo "no hourly-art widgets on $OUTPUT's desktop" >&2; exit 1; }
+
+# Same places and sizes as the installer uses
+caption_want=32,$((sh - 16 - 96)),1008,96
+clock_want=$((sw - 32 - 304)),$((sh - 16 - 224)),304,224
+if { (( !caption )) || [[ $caption_at == "$caption_want" ]]; } &&
+   { (( !clock )) || [[ $clock_at == "$clock_want" ]]; }; then
+  echo "Widgets on $OUTPUT are already in place"
+  exit 0
+fi
+want=()
+(( caption )) && want+=("Applet-$caption:$caption_want,0")
+(( clock )) && want+=("Applet-$clock:$clock_want,0")
+
+# Replace our widgets' entries in a geometry list, keeping any others
+merge() {
+  { tr ';' '\n' <<<"$1" | grep -v -e "^Applet-$clock:" -e "^Applet-$caption:" -e '^$' || true
+    printf '%s\n' "${want[@]}"; } | tr '\n' ';'
+}
+
+keys=("ItemGeometries-${sw}x$sh" ItemGeometriesHorizontal)
+systemctl --user stop plasma-plasmashell
+trap 'systemctl --user start plasma-plasmashell' EXIT
+for key in "${keys[@]}"; do
+  old=$(kreadconfig6 --file "$APPLETSRC" --group Containments --group "$cid" --key "$key")
+  kwriteconfig6 --file "$APPLETSRC" --group Containments --group "$cid" --key "$key" "$(merge "$old")"
+done
+echo "Widgets on $OUTPUT moved back; Plasma is restarting"

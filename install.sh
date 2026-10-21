@@ -17,17 +17,23 @@ read -r ox oy < <(kscreen-doctor -j | jq -r --arg o "$OUTPUT" \
   '.outputs[] | select(.name == $o and .enabled) | "\(.pos.x) \(.pos.y)"') || true
 [[ -n ${ox:-} ]] || { echo "output $OUTPUT not found or not enabled; set HOURLY_ART_OUTPUT" >&2; exit 1; }
 
-install -Dm755 bin/hourly-art ~/.local/bin/hourly-art
-install -Dm644 systemd/hourly-art.service ~/.config/systemd/user/hourly-art.service
-install -Dm644 systemd/hourly-art.timer ~/.config/systemd/user/hourly-art.timer
-if [[ $OUTPUT != eDP-1 ]]; then
-  install -Dm644 /dev/stdin ~/.config/systemd/user/hourly-art.service.d/output.conf <<EOF
+for f in hourly-art hourly-art-fix-widgets hourly-art-lid-watch; do
+  install -Dm755 "bin/$f" ~/.local/bin/"$f"
+done
+for f in hourly-art.service hourly-art.timer hourly-art-lid.service; do
+  install -Dm644 "systemd/$f" ~/.config/systemd/user/"$f"
+done
+for unit in hourly-art hourly-art-lid; do
+  conf=~/.config/systemd/user/$unit.service.d/output.conf
+  if [[ $OUTPUT != eDP-1 ]]; then
+    install -Dm644 /dev/stdin "$conf" <<EOF
 [Service]
 Environment=HOURLY_ART_OUTPUT=$OUTPUT
 EOF
-else
-  rm -f ~/.config/systemd/user/hourly-art.service.d/output.conf
-fi
+  else
+    rm -f "$conf"
+  fi
+done
 
 for p in plasmoids/*/; do
   dest=~/.local/share/plasma/plasmoids/$(basename "$p")
@@ -53,6 +59,8 @@ for (var i = 0; i < ds.length; i++) {
 
 systemctl --user daemon-reload
 systemctl --user enable --now hourly-art.timer
+systemctl --user enable hourly-art-lid.service
+systemctl --user restart hourly-art-lid.service
 if ! systemctl --user start hourly-art.service; then
   echo "Installed, but the first run failed; see: journalctl --user -u hourly-art" >&2
   exit 1
