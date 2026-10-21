@@ -14,7 +14,7 @@ done
 python3 -c 'import PIL' 2>/dev/null || { echo "missing Python module: Pillow" >&2; exit 1; }
 
 read -r ox oy < <(kscreen-doctor -j | jq -r --arg o "$OUTPUT" \
-  '.outputs[] | select(.name == $o and .enabled) | "\(.pos.x) \(.pos.y)"')
+  '.outputs[] | select(.name == $o and .enabled) | "\(.pos.x) \(.pos.y)"') || true
 [[ -n ${ox:-} ]] || { echo "output $OUTPUT not found or not enabled; set HOURLY_ART_OUTPUT" >&2; exit 1; }
 
 install -Dm755 bin/hourly-art ~/.local/bin/hourly-art
@@ -25,6 +25,8 @@ if [[ $OUTPUT != eDP-1 ]]; then
 [Service]
 Environment=HOURLY_ART_OUTPUT=$OUTPUT
 EOF
+else
+  rm -f ~/.config/systemd/user/hourly-art.service.d/output.conf
 fi
 
 for p in plasmoids/*/; do

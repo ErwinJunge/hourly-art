@@ -1,7 +1,8 @@
 [Unit]
 Description=Set a random artwork as the built-in screen wallpaper
-After=graphical-session.target network-online.target
+After=graphical-session.target
 
 [Service]
 Type=oneshot
+TimeoutStartSec=15min
 ExecStart=%h/.local/bin/hourly-art

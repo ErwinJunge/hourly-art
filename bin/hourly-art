@@ -12,32 +12,46 @@ CACHE=${XDG_CACHE_HOME:-$HOME/.cache}/hourly-art
 POOLS=$CACHE/pools.tsv
 mkdir -p "$CACHE"
 
+# A catch-up run after boot or resume can start before plasmashell is up
+for _ in {1..60}; do
+  qdbus6 org.kde.plasmashell /PlasmaShell >/dev/null 2>&1 && break
+  sleep 1
+done
+qdbus6 org.kde.plasmashell /PlasmaShell >/dev/null 2>&1 \
+  || { echo "plasmashell not on the session bus" >&2; exit 1; }
+
 JAPANESE_ARTISTS=(Hokusai Hiroshige Kiyonaga Harunobu Kuniyoshi Kiyochika)
 EUROPEAN_ARTISTS=(Dürer Rembrandt Piranesi Goya Whistler Canaletto)
 # Japanese prints matching these are left out: the collection has a lot of
 # shunga, and its tags don't reliably mark it
 JAPANESE_EXCLUDE=(shunga erotic erotica lovers couple embrace "making love" pillow nude)
 
-# Print "<pool>\t<id>\t<artist>" for every public-domain work with an image
-# whose artist matches the name; pauses keep us under the Met's rate limits
-search_artist() {
-  local pool=$1 dept=$2 artist=$3 off=0 res total
+# Print the ID of every work found by a search with the given curl arguments,
+# one per line, 500 a page (the API stops at 10000); pauses keep us under the
+# Met's rate limits
+search_ids() {
+  local off=0 res total
   while :; do
-    res=$(curl -sfG "$API.1/search" --data-urlencode "q=$artist" -d departmentId="$dept" \
-      -d artistOrCulture=true -d isPublicDomain=true -d hasImages=true -d limit=500 -d offset=$off) || return 1
-    jq -r --arg p "$pool" --arg a "$artist" '.objectIDs // [] | .[] | "\($p)\t\(.)\t\($a)"' <<<"$res"
+    res=$(curl -sfG "$API.1/search" "$@" -d limit=500 -d offset=$off) || return 1
+    jq -r '.objectIDs // [] | .[]' <<<"$res"
     total=$(jq '.total' <<<"$res"); off=$((off + 500)); sleep 1
     (( off < total && off < 10000 )) || return 0
   done
+}
+
+# Print "<pool>\t<id>\t<artist>" for every public-domain work with an image
+# whose artist matches the name
+search_artist() {
+  local pool=$1 dept=$2 artist=$3
+  search_ids --data-urlencode "q=$artist" -d departmentId="$dept" -d artistOrCulture=true \
+    -d isPublicDomain=true -d hasImages=true | awk -v p="$pool" -v a="$artist" '{ print p "\t" $0 "\t" a }'
 }
 
 # Print the IDs of Asian Art works matching any of the exclusion terms
 japanese_excluded() {
   local term
   for term in "${JAPANESE_EXCLUDE[@]}"; do
-    curl -sfG "$API.1/search" --data-urlencode "q=$term" -d departmentId=6 -d limit=500 \
-      | jq -r '.objectIDs // [] | .[]' || return 1
-    sleep 1
+    search_ids --data-urlencode "q=$term" -d departmentId=6 || return 1
   done
 }
 
@@ -51,23 +65,34 @@ build_pools() {
   for a in "${EUROPEAN_ARTISTS[@]}"; do search_artist european 9 "$a" || return 1; done
 }
 
-# Refresh the pools weekly; keep the old list if the API is unreachable
-if [[ ! -s $POOLS ]] || [[ -n $(find "$POOLS" -mtime +7) ]]; then
-  if build_pools > "$POOLS.tmp"; then mv "$POOLS.tmp" "$POOLS"; else rm -f "$POOLS.tmp"; fi
+# Locate the built-in display by its position (Plasma's screen numbering
+# follows output priority, not KWin's order) and get its aspect ratio; while
+# it's disabled (lid closed on an external screen) there's nothing to decorate
+read -r enabled ox oy sw sh < <(kscreen-doctor -j | jq -r --arg o "$OUTPUT" \
+  '.outputs[] | select(.name == $o and .connected)
+   | "\(.enabled) \(.pos.x) \(.pos.y) \(.size.width) \(.size.height)"') || true
+[[ -n ${enabled:-} ]] || { echo "output $OUTPUT not found; set HOURLY_ART_OUTPUT" >&2; exit 1; }
+[[ $enabled == true ]] || { echo "output $OUTPUT is disabled; skipping" >&2; exit 0; }
+
+# Refresh the pools weekly (-mtime +6: at least 7 days old); if the API is
+# unreachable, keep the old list and back its mtime off so the next rebuild
+# is attempted in a day rather than every hour
+if [[ ! -s $POOLS ]] || [[ -n $(find "$POOLS" -mtime +6) ]]; then
+  if build_pools > "$POOLS.tmp"; then
+    mv "$POOLS.tmp" "$POOLS"
+  else
+    rm -f "$POOLS.tmp"
+    [[ -s $POOLS ]] && touch -d '6 days ago' "$POOLS"
+  fi
 fi
 [[ -s $POOLS ]] || { echo "no artwork list available" >&2; exit 1; }
-
-# Locate the built-in display by its position (Plasma's screen numbering
-# follows output priority, not KWin's order) and get its aspect ratio
-read -r ox oy sw sh < <(kscreen-doctor -j | jq -r --arg o "$OUTPUT" \
-  '.outputs[] | select(.name == $o) | "\(.pos.x) \(.pos.y) \(.size.width) \(.size.height)"')
 
 # Cut off the grey-scale calibration strip some scans have along the bottom,
 # then print "<width> <height> <saturation> <fill mode> <bar colour>": crop to
 # fill when that loses little of the work; otherwise fit it on bars in the
 # median colour of its edges
 analyse() {
-  python3 - "$1" "$sw" "$sh" <<'PY' 2>/dev/null || echo "1 0 0 1 #000000"
+  python3 - "$1" "$sw" "$sh" <<'PY' || echo "1 0 0 1 #000000"
 import sys
 from PIL import Image, ImageStat
 
@@ -118,7 +143,9 @@ loss = 1 - min(r, R) / max(r, R)
 # Bars appear top/bottom for wider-than-screen works, left/right otherwise
 strips = ([(0, 0, 200, 4), (0, 196, 200, 200)] if r > R
           else [(0, 0, 4, 200), (196, 0, 200, 200)])
-px = [p for box in strips for p in small.crop(box).get_flattened_data()]
+# get_flattened_data (Pillow 12.1+) replaces getdata, which goes in Pillow 14
+flat = getattr(Image.Image, "get_flattened_data", None) or Image.Image.getdata
+px = [p for box in strips for p in flat(small.crop(box))]
 color = "#" + "".join(f"{sorted(c)[len(c) // 2]:02x}" for c in zip(*px))
 print(w, h, int(sat), 2 if loss < 0.12 else 1, color)
 PY
@@ -141,11 +168,11 @@ for try in $(seq 20); do
   [[ -n $url ]] || continue
   img=$CACHE/art-$id.jpg
   curl -sf --max-time 300 "$url" -o "$img" || { rm -f "$img"; continue; }
-  # Skip portrait-oriented works (they look poor on a 16:10 screen) and
-  # black-and-white archival photos
+  # Skip portrait-oriented works (they look poor on a 16:10 screen),
+  # low-resolution scans and black-and-white archival photos
   read -r w h sat fill color < <(analyse "$img")
-  if (( w < h || sat < 12 )); then rm -f "$img"; continue; fi
-  jq -r '"\(.title) — \(.artistDisplayName // "unknown") (\(.objectDate))"' <<<"$obj" > "${img%.jpg}.txt"
+  if (( w < 1920 || w < h || sat < 12 )); then rm -f "$img"; continue; fi
+  jq -r '"\(.title) — \((.artistDisplayName // "") | if . == "" then "unknown" else . end)\((.objectDate // "") | if . == "" then "" else " (\(.))" end)"' <<<"$obj" > "${img%.jpg}.txt"
   break
 done
 
@@ -169,6 +196,8 @@ if [[ ! -f ${img:-} ]]; then
   echo "offline: using cached artwork" >&2
 fi
 
+# Escape the path for a single-quoted JS string (backslashes first)
+esc=${img//\\/\\\\}; esc=${esc//\'/\\\'}
 qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript "
 var ds = desktops();
 for (var i = 0; i < ds.length; i++) {
@@ -176,7 +205,7 @@ for (var i = 0; i < ds.length; i++) {
   if (g.x == $ox && g.y == $oy) {
     ds[i].wallpaperPlugin = 'org.kde.image';
     ds[i].currentConfigGroup = ['Wallpaper', 'org.kde.image', 'General'];
-    ds[i].writeConfig('Image', 'file://$img');
+    ds[i].writeConfig('Image', 'file://$esc');
     ds[i].writeConfig('FillMode', $fill);
     ds[i].writeConfig('Blur', false);
     ds[i].writeConfig('Color', '$color');

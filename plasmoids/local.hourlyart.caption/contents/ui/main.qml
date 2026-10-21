@@ -8,7 +8,7 @@ import org.kde.kirigami as Kirigami
 PlasmoidItem {
     id: root
 
-    readonly property string command: "cat \"$HOME/.cache/hourly-art/current.txt\""
+    readonly property string command: "cat \"${XDG_CACHE_HOME:-$HOME/.cache}/hourly-art/current.txt\""
     property string title: ""
     property string credit: ""
 
@@ -20,7 +20,7 @@ PlasmoidItem {
         engine: "executable"
         onNewData: (source, data) => {
             const text = (data.stdout || "").trim()
-            const sep = text.indexOf(" — ")
+            const sep = text.lastIndexOf(" — ")
             root.title = sep >= 0 ? text.slice(0, sep) : text
             root.credit = sep >= 0 ? text.slice(sep + 3) : ""
             disconnectSource(source)
