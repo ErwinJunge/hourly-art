@@ -8,7 +8,7 @@ cd "$(dirname "$0")"
 # The output to decorate; see `kscreen-doctor -o` for names
 OUTPUT=${HOURLY_ART_OUTPUT:-eDP-1}
 
-for cmd in curl jq python3 qdbus6 kscreen-doctor systemctl; do
+for cmd in curl jq python3 qdbus6 kscreen-doctor systemctl gdbus kreadconfig6 kwriteconfig6; do
   command -v "$cmd" >/dev/null || { echo "missing command: $cmd" >&2; exit 1; }
 done
 python3 -c 'import PIL' 2>/dev/null || { echo "missing Python module: Pillow" >&2; exit 1; }

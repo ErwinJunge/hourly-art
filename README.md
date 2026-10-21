@@ -43,10 +43,12 @@ Along the way the script:
 
 - KDE Plasma 6 (tested on 6.8, Wayland)
 - `curl`, `jq`, `python3` with Pillow, `qdbus6`, `kscreen-doctor`
+- `gdbus`, `kreadconfig6` and `kwriteconfig6`, used to put the widgets back
+  after the lid opens (these come with any Plasma install)
 - Plasma 5 Support (`plasma5support`), used by the caption widget
 - systemd user session
 
-On Arch Linux: `sudo pacman -S curl jq python-pillow qt6-tools libkscreen plasma5support`
+On Arch Linux: `sudo pacman -S curl jq python-pillow qt6-tools libkscreen plasma5support glib2 kconfig`
 
 ## Installation
 
