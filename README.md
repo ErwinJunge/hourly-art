@@ -36,6 +36,9 @@ Along the way the script:
   "shunga", "erotic" or "lovers" in the Met's search are excluded too. The
   filters are based on keywords, so they are not airtight. Utamaro and Eisen,
   who made the most shunga, are left out entirely.
+- **Changes on the hour:** after each change it downloads the next work, so
+  the next change only has to switch to it and lands within a second of the
+  hour.
 - **Works offline:** it keeps the last 168 downloads (a week, roughly
   0.6–1 GB). If the Met can't be reached, it shows a random cached work.
 

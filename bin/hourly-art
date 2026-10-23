@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Set a random public-domain artwork from the Met Museum as the wallpaper on
-# the built-in screen only. Each run picks one of three pools with equal
-# chance: European paintings, Japanese woodblock prints by selected artists,
-# or European prints by selected artists.
+# the built-in screen only. Each artwork comes from one of three pools, with
+# equal chance: European paintings, Japanese woodblock prints by selected
+# artists, or European prints by selected artists. The next artwork is
+# fetched ahead, so the change itself takes about a second.
 set -euo pipefail
 
 # The output to decorate; see `kscreen-doctor -o` for names
@@ -81,17 +82,19 @@ read -r enabled ox oy sw sh < <(kscreen-doctor -j | jq -r --arg o "$OUTPUT" \
 # Refresh the pools weekly (-mtime +6: at least 7 days old); if the API is
 # unreachable, keep the old list and back its mtime off so the next rebuild
 # is attempted in a day rather than every hour
-if [[ ! -s $POOLS ]] || [[ -n $(find "$POOLS" -mtime +6) ]]; then
-  # A build missing a whole pool (say, an empty reply) counts as failed
-  if build_pools > "$POOLS.tmp" && awk -F'\t' '{ p[$1] } END {
-       exit !(("paintings" in p) && ("japanese" in p) && ("european" in p)) }' "$POOLS.tmp"; then
-    mv "$POOLS.tmp" "$POOLS"
-  else
-    rm -f "$POOLS.tmp"
-    [[ -s $POOLS ]] && touch -d '6 days ago' "$POOLS"
+refresh_pools() {
+  if [[ ! -s $POOLS ]] || [[ -n $(find "$POOLS" -mtime +6) ]]; then
+    # A build missing a whole pool (say, an empty reply) counts as failed
+    if build_pools > "$POOLS.tmp" && awk -F'\t' '{ p[$1] } END {
+         exit !(("paintings" in p) && ("japanese" in p) && ("european" in p)) }' "$POOLS.tmp"; then
+      mv "$POOLS.tmp" "$POOLS"
+    else
+      rm -f "$POOLS.tmp"
+      [[ -s $POOLS ]] && touch -d '6 days ago' "$POOLS"
+    fi
   fi
-fi
-[[ -s $POOLS ]] || { echo "no artwork list available" >&2; exit 1; }
+  [[ -s $POOLS ]] || { echo "no artwork list available" >&2; return 1; }
+}
 
 # Cut off the grey-scale calibration strip some scans have along the bottom,
 # then print "<width> <height> <saturation> <fill mode> <bar colour>": crop to
@@ -157,14 +160,25 @@ print(w, h, int(sat), 2 if loss < 0.12 else 1, color)
 PY
 }
 
-# Try fresh artwork from the Met; each download gets a caption file next to it
-for try in $(seq 20); do
-  # Stop after 10 minutes so the cached fallback runs before systemd's timeout
-  (( SECONDS < 600 )) || break
-  (( try == 1 )) || sleep 1
+# Download a fresh artwork from the Met into $img, with a caption file next
+# to it; fails if no suitable work turns up
+fetch() {
+  img=
+  for try in $(seq 20); do
+    # Stop after 10 minutes so the cached fallback runs before systemd's timeout
+    (( SECONDS < 600 )) || break
+    (( try == 1 )) || sleep 1
+    fetch_one && return 0
+  done
+  img=
+  return 1
+}
+
+fetch_one() {
+  local pool id artist obj url w h sat fill color
   pool=$(shuf -n1 -e paintings japanese european)
-  IFS=$'\t' read -r _ id artist < <(awk -F'\t' -v p="$pool" '$1 == p' "$POOLS" | shuf -n1) || continue
-  obj=$(curl -sf --connect-timeout 15 --max-time 30 "$API/objects/$id") || continue
+  IFS=$'\t' read -r _ id artist < <(awk -F'\t' -v p="$pool" '$1 == p' "$POOLS" | shuf -n1) || return 1
+  obj=$(curl -sf --connect-timeout 15 --max-time 30 "$API/objects/$id") || return 1
   # The search matches loosely, so check the artist; skip nudes in every pool
   # and, in the Japanese pool, anything whose title suggests shunga
   url=$(jq -r --arg a "$artist" --arg p "$pool" '
@@ -173,17 +187,29 @@ for try in $(seq 20); do
     | select(([.tags[]?.term] | any(test("Nude"))) or (.title | test("\\bnudes?\\b|naked"; "i")) | not)
     | select($p != "japanese"
         or (.title | test("embrac|lover|erotic|shunga|making love|couple|pillow"; "i") | not))
-    | .primaryImage' <<<"$obj") || continue
-  [[ -n $url ]] || continue
+    | .primaryImage' <<<"$obj") || return 1
+  [[ -n $url ]] || return 1
+  # Leave alone a work that's on screen or already waiting
   img=$CACHE/art-$id.jpg
-  curl -sf --connect-timeout 15 --max-time 120 "$url" -o "$img" || { rm -f "$img"; continue; }
+  [[ ! -f $img ]] || return 1
+  curl -sf --connect-timeout 15 --max-time 120 "$url" -o "$img" || { rm -f "$img"; return 1; }
   # Skip portrait-oriented works (they look poor on a 16:10 screen),
   # low-resolution scans and black-and-white archival photos
   read -r w h sat fill color < <(analyse "$img")
-  if (( w < 1920 || w < h || sat < 12 )); then rm -f "$img"; continue; fi
+  if (( w < 1920 || w < h || sat < 12 )); then rm -f "$img"; return 1; fi
   jq -r '"\(.title) — \((.artistDisplayName // "") | if . == "" then "unknown" else . end)\((.objectDate // "") | if . == "" then "" else " (\(.))" end)"' <<<"$obj" > "${img%.jpg}.txt"
-  break
-done
+}
+
+# Each run shows the artwork the previous run fetched ahead, so the change
+# lands right on the hour, then fetches the next one. Without one waiting
+# (first run, or the last fetch failed), fetch it now.
+NEXT=$CACHE/next
+img=$(cat "$NEXT" 2>/dev/null || true)
+rm -f "$NEXT"
+if [[ ! -f ${img:-} || ! -f ${img%.jpg}.txt ]]; then
+  img=
+  if refresh_pools; then fetch || true; fi
+fi
 
 # No fresh work (offline, or every try rejected): show a random cached work,
 # other than the one already on screen
@@ -202,9 +228,9 @@ if [[ ! -f ${img:-} ]]; then
           if [[ -f ${f%.jpg}.txt && file://$f != "$current" ]]; then echo "$f"; fi
         done | shuf -n1)
   [[ -n $img ]] || { echo "no artwork found and nothing cached" >&2; exit 1; }
-  read -r w h sat fill color < <(analyse "$img")
   echo "no new artwork found; using cached artwork" >&2
 fi
+read -r _ _ _ fill color < <(analyse "$img")
 
 # Escape the path for a single-quoted JS string (backslashes first)
 esc=${img//\\/\\\\}; esc=${esc//\'/\\\'}
@@ -246,3 +272,10 @@ cat "$CACHE/current.txt"
 
 # Keep a week of hourly downloads (with their captions) for offline use
 ls -1t "$CACHE"/art-*.jpg | tail -n +169 | while read -r f; do rm -f "$f" "${f%.jpg}.txt"; done
+
+# Fetch the next artwork now, ready for the next run
+if refresh_pools && fetch; then
+  echo "$img" > "$NEXT"
+else
+  echo "couldn't fetch the next artwork; the next run will try again" >&2
+fi

@@ -3,6 +3,8 @@ Description=Change built-in screen artwork every hour
 
 [Timer]
 OnCalendar=hourly
+# Right on the hour, rather than anywhere in its first minute
+AccuracySec=1s
 Persistent=true
 
 [Install]
