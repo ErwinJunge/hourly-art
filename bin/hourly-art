@@ -9,6 +9,7 @@ set -euo pipefail
 # The output to decorate; see `kscreen-doctor -o` for names
 OUTPUT=${HOURLY_ART_OUTPUT:-eDP-1}
 API=https://collectionapi.metmuseum.org/public/collection/v1
+RIJKS_SEARCH=https://data.rijksmuseum.nl/search/collection
 CACHE=${XDG_CACHE_HOME:-$HOME/.cache}/hourly-art
 POOLS=$CACHE/pools.tsv
 mkdir -p "$CACHE"
@@ -26,6 +27,13 @@ EUROPEAN_ARTISTS=(Dürer Rembrandt Piranesi Goya Whistler Canaletto)
 # Japanese prints matching these are left out: the collection has a lot of
 # shunga, and its tags don't reliably mark it
 JAPANESE_EXCLUDE=(shunga erotic erotica lovers couple embrace "making love" pillow nude)
+# Rijksmuseum paintings whose descriptions mention nudity are left out, and
+# at pick time so are ones with these words in the title or these Iconclass
+# subjects: the nude figure (31AA, 31AB) and classical mythology and history
+# (92-98), where most of the collection's nudes are
+RIJKS_EXCLUDE=(naakt naakte nude naked bloot)
+RIJKS_TITLE_EXCLUDE='naakt|\bnudes?\b|naked|venus|dana[eë]|bath?sh?eba|susanna|leda|cleopatra|lucretia|nymph|nimf|bathers|baders|adam (and|en) eva?'
+RIJKS_ICONCLASS_EXCLUDE='iconclass\.org/(31A[AB]|9[2-8])'
 
 # Print the ID of every work found by a search with the given curl arguments,
 # one per line, 500 a page (the API stops at 10000); pauses keep us under the
@@ -60,14 +68,38 @@ japanese_excluded() {
   done
 }
 
+# Print "rijks\t<id>\t" for every Rijksmuseum painting with an image; the
+# search returns 100 a page, with a link to the next
+rijks_paintings() {
+  rijks_search "$RIJKS_SEARCH?type=painting&imageAvailable=true" | sed 's/.*/rijks\t&\t/'
+}
+
+# Print the ID of every Rijksmuseum work a search URL finds
+rijks_search() {
+  local url=$1 res
+  while [[ -n $url ]]; do
+    (( SECONDS < 480 )) || return 1
+    res=$(curl -sf --connect-timeout 15 --max-time 60 "$url") || return 1
+    # As with the Met, a reply that isn't the expected JSON is a failure
+    jq -e '.orderedItems | arrays' <<<"$res" >/dev/null || return 1
+    jq -r '.orderedItems[].id | sub(".*/"; "")' <<<"$res"
+    url=$(jq -r '.next.id // empty' <<<"$res"); sleep 1
+  done
+}
+
 build_pools() {
-  local excluded japanese
+  local excluded japanese paintings
   excluded=$(japanese_excluded) || return 1
   curl -sf --connect-timeout 15 --max-time 60 "$API/objects?departmentIds=11" | jq -r '.objectIDs[] | "paintings\t\(.)\t"' || return 1
   sleep 1
   japanese=$(for a in "${JAPANESE_ARTISTS[@]}"; do search_artist japanese 6 "$a" || exit 1; done) || return 1
   awk -F'\t' 'NR == FNR { skip[$1]; next } !($2 in skip)' <(echo "$excluded") <(echo "$japanese")
   for a in "${EUROPEAN_ARTISTS[@]}"; do search_artist european 9 "$a" || return 1; done
+  excluded=$(for term in "${RIJKS_EXCLUDE[@]}"; do
+               rijks_search "$RIJKS_SEARCH?type=painting&description=$term" || exit 1
+             done) || return 1
+  paintings=$(rijks_paintings) || return 1
+  awk -F'\t' 'NR == FNR { skip[$1]; next } !($2 in skip)' <(echo "$excluded") <(echo "$paintings")
 }
 
 # Locate the built-in display by its position (Plasma's screen numbering
@@ -79,21 +111,28 @@ read -r enabled ox oy sw sh < <(kscreen-doctor -j | jq -r --arg o "$OUTPUT" \
 [[ -n ${enabled:-} ]] || { echo "output $OUTPUT not found; set HOURLY_ART_OUTPUT" >&2; exit 1; }
 [[ $enabled == true ]] || { echo "output $OUTPUT is disabled; skipping" >&2; exit 0; }
 
-# Refresh the pools weekly (-mtime +6: at least 7 days old); if the API is
-# unreachable, keep the old list and back its mtime off so the next rebuild
-# is attempted in a day rather than every hour
+# Refresh the pools weekly (-mtime +6: at least 7 days old); if the APIs are
+# unreachable, keep the old list
 refresh_pools() {
-  if [[ ! -s $POOLS ]] || [[ -n $(find "$POOLS" -mtime +6) ]]; then
+  # Rebuild a list that's a week old or lacks a pool (say, one added since),
+  # but after a failed build wait a day before trying again
+  if { [[ ! -s $POOLS ]] || [[ -n $(find "$POOLS" -mtime +6) ]] || ! complete "$POOLS"; } &&
+     [[ -z $(find "$POOLS.failed" -mmin -1440 2>/dev/null) ]]; then
     # A build missing a whole pool (say, an empty reply) counts as failed
-    if build_pools > "$POOLS.tmp" && awk -F'\t' '{ p[$1] } END {
-         exit !(("paintings" in p) && ("japanese" in p) && ("european" in p)) }' "$POOLS.tmp"; then
+    if build_pools > "$POOLS.tmp" && complete "$POOLS.tmp"; then
       mv "$POOLS.tmp" "$POOLS"
+      rm -f "$POOLS.failed"
     else
       rm -f "$POOLS.tmp"
-      [[ -s $POOLS ]] && touch -d '6 days ago' "$POOLS"
+      touch "$POOLS.failed"
     fi
   fi
   [[ -s $POOLS ]] || { echo "no artwork list available" >&2; return 1; }
+}
+
+complete() {
+  awk -F'\t' '{ p[$1] } END {
+    exit !(("paintings" in p) && ("japanese" in p) && ("european" in p) && ("rijks" in p)) }' "$1"
 }
 
 # Cut off the grey-scale calibration strip some scans have along the bottom,
@@ -175,9 +214,28 @@ fetch() {
 }
 
 fetch_one() {
-  local pool id artist obj url w h sat fill color
-  pool=$(shuf -n1 -e paintings japanese european)
+  local pool id artist url name caption w h sat fill color
+  pool=$(shuf -n1 -e paintings japanese european rijks)
   IFS=$'\t' read -r _ id artist < <(awk -F'\t' -v p="$pool" '$1 == p' "$POOLS" | shuf -n1) || return 1
+  # Sets url, name (for the cache file) and caption, or fails if unsuitable
+  if [[ $pool == rijks ]]; then rijks_object "$id" || return 1
+  else met_object "$pool" "$id" "$artist" || return 1; fi
+  # Leave alone a work that's on screen or already waiting
+  img=$CACHE/art-$name.jpg
+  [[ ! -f $img ]] || return 1
+  curl -sf --connect-timeout 15 --max-time 120 "$url" -o "$img" || { rm -f "$img"; return 1; }
+  # Skip portrait-oriented works (they look poor on a 16:10 screen),
+  # low-resolution scans and black-and-white archival photos
+  read -r w h sat fill color < <(analyse "$img")
+  if (( w < 1920 || w < h || sat < 12 )); then rm -f "$img"; return 1; fi
+  echo "$caption" > "${img%.jpg}.txt"
+}
+
+# "Title — artist (date)", from JSON with title, artist and date fields
+CAPTION='"\(.title) — \((.artist // "") | if . == "" then "unknown" else . end)\((.date // "") | if . == "" then "" else " (\(.))" end)"'
+
+met_object() {
+  local pool=$1 id=$2 artist=$3 obj
   obj=$(curl -sf --connect-timeout 15 --max-time 30 "$API/objects/$id") || return 1
   # The search matches loosely, so check the artist; skip nudes in every pool
   # and, in the Japanese pool, anything whose title suggests shunga
@@ -189,15 +247,38 @@ fetch_one() {
         or (.title | test("embrac|lover|erotic|shunga|making love|couple|pillow"; "i") | not))
     | .primaryImage' <<<"$obj") || return 1
   [[ -n $url ]] || return 1
-  # Leave alone a work that's on screen or already waiting
-  img=$CACHE/art-$id.jpg
-  [[ ! -f $img ]] || return 1
-  curl -sf --connect-timeout 15 --max-time 120 "$url" -o "$img" || { rm -f "$img"; return 1; }
-  # Skip portrait-oriented works (they look poor on a 16:10 screen),
-  # low-resolution scans and black-and-white archival photos
-  read -r w h sat fill color < <(analyse "$img")
-  if (( w < 1920 || w < h || sat < 12 )); then rm -f "$img"; return 1; fi
-  jq -r '"\(.title) — \((.artistDisplayName // "") | if . == "" then "unknown" else . end)\((.objectDate // "") | if . == "" then "" else " (\(.))" end)"' <<<"$obj" > "${img%.jpg}.txt"
+  name=$id
+  caption=$(jq -r "{title, artist: .artistDisplayName, date: .objectDate} | $CAPTION" <<<"$obj")
+}
+
+# Rijksmuseum records are Linked Art: names and statements come in Dutch and
+# English, marked with Getty AAT language IDs
+AAT=http://vocab.getty.edu/aat
+rijks_object() {
+  local id=$1 obj shows subjects
+  obj=$(curl -sfL --connect-timeout 15 --max-time 30 -H 'Accept: application/ld+json' \
+    "https://id.rijksmuseum.nl/$id") || return 1
+  # Only public-domain images (Public Domain Mark or CC0), and no nudes by title
+  url=$(jq -r '
+    [.subject_of[]?.digitally_carried_by[]?
+     | select([.referred_to_by[]?.content] | any(test("creativecommons.org/publicdomain/")))
+     | .access_point[]?.id | select(test("iiif"))][0] // empty' <<<"$obj") || return 1
+  [[ -n $url ]] || return 1
+  caption=$(jq -r --arg en "$AAT/300388277" '
+    def english: (map(select([.language[]?.id] | index($en))) + .)[0].content // "";
+    {title: ([.identified_by[]? | select(.type == "Name")] | english),
+     artist: ([.produced_by.referred_to_by[]?] | english),
+     date: ([.produced_by.timespan.identified_by[]?] | english)}
+    | '"$CAPTION" <<<"$obj") || return 1
+  grep -qiE "$RIJKS_TITLE_EXCLUDE" <<<"${caption% — *}" && return 1
+  # The Iconclass subjects are on the separate depicted-image record
+  shows=$(jq -r '.shows[0].id // empty' <<<"$obj")
+  if [[ -n $shows ]]; then
+    subjects=$(curl -sfL --connect-timeout 15 --max-time 30 -H 'Accept: application/ld+json' \
+      "$shows" | jq -r '.represents_instance_of_type[]?.equivalent[]?.id') || return 1
+    grep -qE "$RIJKS_ICONCLASS_EXCLUDE" <<<"$subjects" && return 1
+  fi
+  name=rijks-$id
 }
 
 # Each run shows the artwork the previous run fetched ahead, so the change

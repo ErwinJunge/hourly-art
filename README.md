@@ -2,24 +2,28 @@
 
 Turns a KDE Plasma screen you rarely use into a small gallery: every hour it
 shows a different public-domain artwork from the
-[Metropolitan Museum of Art](https://www.metmuseum.org/), with a caption naming
-the work and a clock in matching style.
+[Metropolitan Museum of Art](https://www.metmuseum.org/) or the
+[Rijksmuseum](https://www.rijksmuseum.nl/), with a caption naming the work and
+a clock in matching style.
 
 Built for a laptop's built-in screen next to an external monitor, but works
 on any output. Only the chosen screen is changed.
 
 ## What it shows
 
-Each hour one of three collections is picked at random, with equal chance:
+Each hour one of four collections is picked at random, with equal chance:
 
 - **European paintings**: the Met's European Paintings department
 - **Japanese woodblock prints** by Hokusai, Hiroshige, Kiyonaga, Harunobu,
-  Kuniyoshi and Kiyochika
+  Kuniyoshi and Kiyochika, from the Met
 - **European prints** by Dürer, Rembrandt, Piranesi, Goya, Whistler and
-  Canaletto
+  Canaletto, from the Met
+- **Rijksmuseum paintings**: Dutch Golden Age, Hague School and more
 
-Only works the Met marks as public domain are used. Their images are released
-under [CC0](https://www.metmuseum.org/hubs/open-access), free for any use.
+Only public-domain works are used. The Met releases their images under
+[CC0](https://www.metmuseum.org/hubs/open-access); the Rijksmuseum marks them
+with the [Public Domain Mark](https://creativecommons.org/publicdomain/mark/1.0/)
+and is checked per work. Both are free for any use.
 
 Along the way the script:
 
@@ -31,11 +35,15 @@ Along the way the script:
   loses less than 12% of it. Otherwise it is shown whole, on bars in the
   median colour of its edges.
 - **Leaves out nudes and erotica:** works the Met tags as nudes, or with
-  "nude" or "naked" in the title, are skipped in all three collections. Shunga
-  is common in the Japanese collection, so prints matching terms like
-  "shunga", "erotic" or "lovers" in the Met's search are excluded too. The
-  filters are based on keywords, so they are not airtight. Utamaro and Eisen,
-  who made the most shunga, are left out entirely.
+  "nude" or "naked" in the title, are skipped. Shunga is common in the
+  Japanese collection, so prints matching terms like "shunga", "erotic" or
+  "lovers" in the Met's search are excluded too, and Utamaro and Eisen, who
+  made the most shunga, are left out entirely. The Rijksmuseum has no nudity
+  tags, so its paintings are skipped when their description mentions nudity,
+  when their title names a classic nude subject (Venus, Susanna, Leda and so
+  on), or when their subject is classical mythology or history, where most
+  of its nudes are. The filters are based on keywords and subject codes, so
+  they are not airtight.
 - **Changes on the hour:** after each change it downloads the next work, so
   the next change only has to switch to it and lands within a second of the
   hour.
@@ -98,13 +106,13 @@ the desktop's edit mode.
 - **Screen watcher logs:** `journalctl --user -u hourly-art-screens.service`
 
 To change the artists, the collection weighting (the
-`shuf -n1 -e paintings japanese european` line) or the crop threshold, edit
-`bin/hourly-art` and run the installer again. Artist changes take effect when
-the work list is next rebuilt, which happens weekly. To rebuild now, delete
-`~/.cache/hourly-art/pools.tsv`.
+`shuf -n1 -e paintings japanese european rijks` line) or the crop threshold,
+edit `bin/hourly-art` and run the installer again. Artist changes take effect
+when the work list is next rebuilt, which happens weekly. To rebuild now,
+delete `~/.cache/hourly-art/pools.tsv`.
 
-The script spaces its requests to the Met's API about a second apart. Bursts of
-requests get your IP temporarily blocked.
+The script spaces its requests to the museums' APIs about a second apart.
+Bursts of requests to the Met get your IP temporarily blocked.
 
 ## Layout notes
 
