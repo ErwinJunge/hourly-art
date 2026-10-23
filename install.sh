@@ -8,7 +8,7 @@ cd "$(dirname "$0")"
 # The output to decorate; see `kscreen-doctor -o` for names
 OUTPUT=${HOURLY_ART_OUTPUT:-eDP-1}
 
-for cmd in curl jq python3 qdbus6 kscreen-doctor systemctl gdbus kreadconfig6 kwriteconfig6; do
+for cmd in curl jq python3 qdbus6 kscreen-doctor systemctl kreadconfig6 kwriteconfig6; do
   command -v "$cmd" >/dev/null || { echo "missing command: $cmd" >&2; exit 1; }
 done
 python3 -c 'import PIL' 2>/dev/null || { echo "missing Python module: Pillow" >&2; exit 1; }
@@ -17,13 +17,19 @@ read -r ox oy < <(kscreen-doctor -j | jq -r --arg o "$OUTPUT" \
   '.outputs[] | select(.name == $o and .enabled) | "\(.pos.x) \(.pos.y)"') || true
 [[ -n ${ox:-} ]] || { echo "output $OUTPUT not found or not enabled; set HOURLY_ART_OUTPUT" >&2; exit 1; }
 
-for f in hourly-art hourly-art-fix-widgets hourly-art-lid-watch; do
+# Replace the lid watcher of earlier versions with the screen watcher
+if [[ -e ~/.config/systemd/user/hourly-art-lid.service ]]; then
+  systemctl --user disable --now hourly-art-lid.service || true
+  rm -rf ~/.config/systemd/user/hourly-art-lid.service{,.d} ~/.local/bin/hourly-art-lid-watch
+fi
+
+for f in hourly-art hourly-art-fix-widgets hourly-art-screen-watch; do
   install -Dm755 "bin/$f" ~/.local/bin/"$f"
 done
-for f in hourly-art.service hourly-art.timer hourly-art-lid.service; do
+for f in hourly-art.service hourly-art.timer hourly-art-screens.service; do
   install -Dm644 "systemd/$f" ~/.config/systemd/user/"$f"
 done
-for unit in hourly-art hourly-art-lid; do
+for unit in hourly-art hourly-art-screens; do
   conf=~/.config/systemd/user/$unit.service.d/output.conf
   if [[ $OUTPUT != eDP-1 ]]; then
     install -Dm644 /dev/stdin "$conf" <<EOF
@@ -46,6 +52,7 @@ done
 qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript "
 var ds = desktops();
 for (var i = 0; i < ds.length; i++) {
+  if (ds[i].screen < 0 || ds[i].screen >= screenCount) continue;
   var g = screenGeometry(ds[i].screen);
   if (g.x != $ox || g.y != $oy) continue;
   var have = {};
@@ -59,8 +66,8 @@ for (var i = 0; i < ds.length; i++) {
 
 systemctl --user daemon-reload
 systemctl --user enable --now hourly-art.timer
-systemctl --user enable hourly-art-lid.service
-systemctl --user restart hourly-art-lid.service
+systemctl --user enable hourly-art-screens.service
+systemctl --user restart hourly-art-screens.service
 if ! systemctl --user start hourly-art.service; then
   echo "Installed, but the first run failed; see: journalctl --user -u hourly-art" >&2
   exit 1

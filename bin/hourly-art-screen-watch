@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Run hourly-art-fix-widgets at login and whenever the screen layout changes
+# (lid opened or closed, external screen plugged in or out), so the caption,
+# clock and artwork stay on the hourly-art screen. Polls the layout every few
+# seconds, which is cheap; KScreen offers no change signal to listen for.
+set -euo pipefail
+
+layout() {
+  kscreen-doctor -j | jq -c '[.outputs[] | select(.enabled) | {name, pos, size}]'
+}
+
+last=
+while :; do
+  now=$(layout || true)
+  if [[ -n $now && $now != "$last" ]]; then
+    # Let Plasma finish moving desktops between screens; on a slow resume it
+    # may not be done yet, so try a few times
+    for delay in 3 5 10; do
+      sleep "$delay"
+      "$(dirname "$0")"/hourly-art-fix-widgets && break
+    done
+    last=$(layout || true)
+  fi
+  sleep 3
+done

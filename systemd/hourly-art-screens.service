@@ -1,10 +1,10 @@
 [Unit]
-Description=Put the hourly-art widgets back after the laptop lid opens
+Description=Keep the hourly-art widgets on their screen as screens change
 PartOf=graphical-session.target
 After=graphical-session.target
 
 [Service]
-ExecStart=%h/.local/bin/hourly-art-lid-watch
+ExecStart=%h/.local/bin/hourly-art-screen-watch
 Restart=on-failure
 RestartSec=10
 

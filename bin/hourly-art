@@ -191,6 +191,7 @@ if [[ ! -f ${img:-} ]]; then
   current=$(qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript "
     var ds = desktops();
     for (var i = 0; i < ds.length; i++) {
+      if (ds[i].screen < 0 || ds[i].screen >= screenCount) continue;
       var g = screenGeometry(ds[i].screen);
       if (g.x == $ox && g.y == $oy) {
         ds[i].currentConfigGroup = ['Wallpaper', 'org.kde.image', 'General'];
@@ -207,11 +208,26 @@ fi
 
 # Escape the path for a single-quoted JS string (backslashes first)
 esc=${img//\\/\\\\}; esc=${esc//\'/\\\'}
+cache_esc=${CACHE//\\/\\\\}; cache_esc=${cache_esc//\'/\\\'}
+# Plasma ties desktops to screen numbers, not outputs, so this desktop may
+# belong to another screen at other times (e.g. the external screen's when
+# the laptop is used on its own). Remember what it showed before our first
+# artwork, so hourly-art-fix-widgets can put that back when it moves on.
+# Desktops left over from a disconnected screen are skipped.
 result=$(qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript "
 var ds = desktops();
 for (var i = 0; i < ds.length; i++) {
+  if (ds[i].screen < 0 || ds[i].screen >= screenCount) continue;
   var g = screenGeometry(ds[i].screen);
   if (g.x == $ox && g.y == $oy) {
+    var plugin = ds[i].wallpaperPlugin;
+    ds[i].currentConfigGroup = ['Wallpaper', 'org.kde.image', 'General'];
+    var before = String(ds[i].readConfig('Image', ''));
+    if (plugin != 'org.kde.image' || before.indexOf('file://$cache_esc/art-') != 0) {
+      ds[i].currentConfigGroup = ['General'];
+      ds[i].writeConfig('HourlyArtSavedPlugin', plugin);
+      ds[i].writeConfig('HourlyArtSavedImage', before);
+    }
     ds[i].wallpaperPlugin = 'org.kde.image';
     ds[i].currentConfigGroup = ['Wallpaper', 'org.kde.image', 'General'];
     ds[i].writeConfig('Image', 'file://$esc');
@@ -220,10 +236,12 @@ for (var i = 0; i < ds.length; i++) {
     ds[i].writeConfig('Color', '$color');
     print('set');
   }
-}")
+}") || { echo "$result" >&2; exit 1; }
 [[ $result == *set* ]] || { echo "no Plasma desktop found for $OUTPUT" >&2; exit 1; }
 
 cp "${img%.jpg}.txt" "$CACHE/current.txt"
+# hourly-art-fix-widgets compares a desktop's wallpaper with this
+echo "file://$img" > "$CACHE/current-image"
 cat "$CACHE/current.txt"
 
 # Keep a week of hourly downloads (with their captions) for offline use
