@@ -91,10 +91,17 @@ grep -v '^target ' <<<"$out" | sed '/^$/d' || true
 read -r _ cid sw sh clock clock_at caption caption_at art < <(grep '^target ' <<<"$out") || true
 [[ -n ${cid:-} ]] || { echo "no Plasma desktop found for $OUTPUT" >&2; exit 1; }
 
-# A desktop that just became the hourly-art screen's may show an older
-# artwork than the caption names; set a new one once Plasma is settled
+# Set a new artwork once Plasma is settled if a desktop that just became the
+# hourly-art screen's shows an older one than the caption names, or if the
+# last change was before this hour (the hourly run skips while the screen is
+# off, e.g. with the lid closed on an external screen)
 new_art() {
-  (( art )) || systemctl --user start --no-block hourly-art.service
+  local changed hour
+  changed=$(stat -c %Y "$CACHE/current-image" 2>/dev/null || echo 0)
+  hour=$(date -d "$(date +'%F %H:00')" +%s)
+  if (( !art || changed < hour )); then
+    systemctl --user start --no-block hourly-art.service
+  fi
 }
 
 # Same places and sizes as the installer uses

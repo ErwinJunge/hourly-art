@@ -126,7 +126,9 @@ Bursts of requests to the Met get your IP temporarily blocked.
   seconds and, when it changes, runs `hourly-art-fix-widgets`. That adds the
   widgets to whichever desktop the hourly-art screen has now, takes them and
   the artwork off other screens' desktops (restoring the wallpaper those had),
-  and sets a new artwork if the desktop shows an older one.
+  and sets a new artwork if the desktop shows an older one. It also does that
+  if the hourly change was skipped because the screen was off, so opening the
+  lid at 10:05 after closing it at 9:55 shows the 10:00 artwork.
 - **Widgets moving after a lid close:** with an external screen attached,
   closing a laptop's lid switches its screen off, and Plasma squeezes that
   desktop's widgets onto the external screen's size, so on reopening they sit
