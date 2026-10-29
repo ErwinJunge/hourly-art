@@ -17,9 +17,13 @@ while :; do
     # may not be done yet, so try a few times
     for delay in 3 5 10; do
       sleep "$delay"
-      "$(dirname "$0")"/hourly-art-fix-widgets && break
+      if "$(dirname "$0")"/hourly-art-fix-widgets; then
+        # Only this layout counts as handled: a change made while the fix
+        # ran is picked up next time round, and a failed fix is retried
+        last=$now
+        break
+      fi
     done
-    last=$(layout || true)
   fi
   sleep 3
 done

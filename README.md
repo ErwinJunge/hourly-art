@@ -48,7 +48,7 @@ Along the way the script:
   the next change only has to switch to it and lands within a second of the
   hour.
 - **Works offline:** it keeps the last 168 downloads (a week, roughly
-  0.6–1 GB). If the Met can't be reached, it shows a random cached work.
+  0.6–1 GB). If the museums can't be reached, it shows a random cached work.
 
 ## Requirements
 
@@ -165,4 +165,5 @@ wallpaper in Plasma's settings.
 ## License
 
 MIT; see [LICENSE](LICENSE). Artwork images come from the Met's Open Access
-programme and are not part of this repository.
+programme and the Rijksmuseum's public-domain collection, and are not part of
+this repository.

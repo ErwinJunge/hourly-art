@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Set a random public-domain artwork from the Met Museum as the wallpaper on
-# the built-in screen only. Each artwork comes from one of three pools, with
-# equal chance: European paintings, Japanese woodblock prints by selected
-# artists, or European prints by selected artists. The next artwork is
-# fetched ahead, so the change itself takes about a second.
+# Set a random public-domain artwork from the Met Museum or the Rijksmuseum
+# as the wallpaper on the built-in screen only. Each artwork comes from one of
+# four pools, with equal chance: the Met's European paintings, Japanese
+# woodblock prints and European prints by selected artists, and the
+# Rijksmuseum's paintings. The next artwork is fetched ahead, so the change
+# itself takes about a second.
 set -euo pipefail
 
 # The output to decorate; see `kscreen-doctor -o` for names
