@@ -350,6 +350,18 @@ for (var i = 0; i < ds.length; i++) {
 cp "${img%.jpg}.txt" "$CACHE/current.txt"
 # hourly-art-fix-widgets compares a desktop's wallpaper with this
 echo "file://$img" > "$CACHE/current-image"
+# Have the caption widgets re-read the caption now: changing a setting they
+# declare notifies them straight away
+qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript "
+var ds = desktops();
+for (var i = 0; i < ds.length; i++) {
+  var ws = ds[i].widgets();
+  for (var j = 0; j < ws.length; j++) {
+    if (ws[j].type != 'local.hourlyart.caption') continue;
+    ws[j].currentConfigGroup = ['General'];
+    ws[j].writeConfig('revision', String(Date.now()));
+  }
+}" >/dev/null || echo "couldn't tell the caption widget to update" >&2
 cat "$CACHE/current.txt"
 
 # Keep a week of hourly downloads (with their captions) for offline use

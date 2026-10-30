@@ -27,8 +27,13 @@ PlasmoidItem {
         }
     }
 
+    // hourly-art changes this setting through Plasma's scripting right after
+    // writing a new caption; the timer is only a fallback
+    readonly property string revision: Plasmoid.configuration.revision
+    onRevisionChanged: reader.connectSource(root.command)
+
     Timer {
-        interval: 30000
+        interval: 300000
         running: true
         repeat: true
         triggeredOnStart: true
