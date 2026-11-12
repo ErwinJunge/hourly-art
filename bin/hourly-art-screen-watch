@@ -9,7 +9,9 @@ layout() {
   kscreen-doctor -j | jq -c '[.outputs[] | select(.enabled) | {name, pos, size}]'
 }
 
-last=
+fix() { "$(dirname "$0")"/hourly-art-fix-widgets; }
+
+last= rechecks=()
 while :; do
   now=$(layout || true)
   if [[ -n $now && $now != "$last" ]]; then
@@ -17,13 +19,20 @@ while :; do
     # may not be done yet, so try a few times
     for delay in 3 5 10; do
       sleep "$delay"
-      if "$(dirname "$0")"/hourly-art-fix-widgets; then
+      if fix; then
         # Only this layout counts as handled: a change made while the fix
         # ran is picked up next time round, and a failed fix is retried
         last=$now
+        # Plasma can hand a desktop to another screen after the layout has
+        # settled (as when a monitor is plugged in), so check again later;
+        # with everything in place these checks change nothing
+        rechecks=($((SECONDS + 15)) $((SECONDS + 45)))
         break
       fi
     done
+  elif (( ${#rechecks[@]} )) && (( SECONDS >= rechecks[0] )); then
+    rechecks=("${rechecks[@]:1}")
+    fix || last=
   fi
   sleep 3
 done
