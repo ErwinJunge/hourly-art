@@ -1,38 +1,69 @@
 #!/usr/bin/env bash
 # Run hourly-art-fix-widgets at login and whenever the screen layout changes
 # (lid opened or closed, external screen plugged in or out), so the caption,
-# clock and artwork stay on the hourly-art screen. Polls the layout every few
-# seconds, which is cheap; KScreen offers no change signal to listen for.
+# clock and artwork stay on the hourly-art screen. KScreen offers no change
+# signal to listen for, and asking it for the layout costs a few tens of
+# milliseconds, so this watches the kernel's display connectors (cheap to
+# read) and only asks KScreen when they change, plus once a minute in case.
 set -euo pipefail
 
 layout() {
   kscreen-doctor -j | jq -c '[.outputs[] | select(.enabled) | {name, pos, size}]'
 }
 
+# Set $drm to the state of every display connector, reading the files with
+# builtins so polling starts no processes
+connectors() {
+  local f status enabled
+  drm=
+  for f in /sys/class/drm/card*-*/status; do
+    read -r status < "$f" || true
+    read -r enabled < "${f%/status}/enabled" || true
+    drm+="${f%/status} $status $enabled;"
+  done
+}
+
 fix() { "$(dirname "$0")"/hourly-art-fix-widgets; }
 
-last= rechecks=()
+# Wait with read's timeout on a pipe nothing writes to, rather than starting
+# a sleep process every round
+exec {pause}<> <(:)
+nap() { read -rt "$1" -u "$pause" || true; }
+
+last= seen= rechecks=() next_full=0 busy_until=0
 while :; do
-  now=$(layout || true)
-  if [[ -n $now && $now != "$last" ]]; then
-    # Let Plasma finish moving desktops between screens; on a slow resume it
-    # may not be done yet, so try a few times
-    for delay in 3 5 10; do
-      sleep "$delay"
-      if fix; then
-        # Only this layout counts as handled: a change made while the fix
-        # ran is picked up next time round, and a failed fix is retried
-        last=$now
-        # Plasma can hand a desktop to another screen after the layout has
-        # settled (as when a monitor is plugged in), so check again later;
-        # with everything in place these checks change nothing
-        rechecks=($((SECONDS + 15)) $((SECONDS + 45)))
-        break
-      fi
-    done
-  elif (( ${#rechecks[@]} )) && (( SECONDS >= rechecks[0] )); then
+  connectors
+  if [[ $drm != "$seen" ]]; then
+    # KWin and Plasma follow the kernel within seconds; keep asking KScreen
+    # for a while so their final layout is caught
+    seen=$drm busy_until=$((SECONDS + 20))
+  fi
+  # Ask KScreen while a change settles, while a failed fix awaits a retry,
+  # and once a minute regardless
+  if (( SECONDS < busy_until || SECONDS >= next_full )) || [[ -z $last ]]; then
+    next_full=$((SECONDS + 60))
+    now=$(layout || true)
+    if [[ -n $now && $now != "$last" ]]; then
+      # Let Plasma finish moving desktops between screens; on a slow resume it
+      # may not be done yet, so try a few times
+      for delay in 3 5 10; do
+        sleep "$delay"
+        if fix; then
+          # Only this layout counts as handled: a change made while the fix
+          # ran is picked up next time round, and a failed fix is retried
+          last=$now
+          # Plasma can hand a desktop to another screen after the layout has
+          # settled (as when a monitor is plugged in), so check again later;
+          # with everything in place these checks change nothing
+          rechecks=($((SECONDS + 15)) $((SECONDS + 45)))
+          break
+        fi
+      done
+    fi
+  fi
+  if (( ${#rechecks[@]} )) && (( SECONDS >= rechecks[0] )); then
     rechecks=("${rechecks[@]:1}")
     fix || last=
   fi
-  sleep 3
+  nap 2
 done

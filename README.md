@@ -122,8 +122,10 @@ Bursts of requests to the Met get your IP temporarily blocked.
 - **Desktops follow screen numbers:** Plasma gives each screen number its
   own desktop, and numbers follow output priority. Used on its own, a laptop
   screen becomes screen 0 and gets the external screen's desktop, without the
-  widgets. The `hourly-art-screens` service checks the screen layout every few
-  seconds and, when it changes, runs `hourly-art-fix-widgets`. That adds the
+  widgets. The `hourly-art-screens` service watches the kernel's display
+  connectors every 2 seconds (cheap enough to cost about 0.1% of a CPU core),
+  checks the screen layout when they change and once a minute, and when the
+  layout changes runs `hourly-art-fix-widgets`. That adds the
   widgets to whichever desktop the hourly-art screen has now, takes them and
   the artwork off other screens' desktops (restoring the wallpaper those had),
   and sets a new artwork if the desktop shows an older one. It also does that
